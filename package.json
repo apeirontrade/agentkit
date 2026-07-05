@@ -18,7 +18,8 @@
     "x402:smoke": "tsx scripts/x402-apify-smoke.ts",
     "indexer:smoke": "tsx scripts/indexer-smoke.ts",
     "scoring:demo": "tsx scripts/scoring-demo.ts",
-    "provenance:score": "tsx scripts/provenance-score.ts"
+    "provenance:score": "tsx scripts/provenance-score.ts",
+    "provenance:registry": "tsx scripts/provenance-registry.ts"
   },
   "dependencies": {
     "@agentkit/chain-indexer": "workspace:*",

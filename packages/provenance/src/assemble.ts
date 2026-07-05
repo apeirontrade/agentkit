@@ -13,6 +13,7 @@ import {
   type ScoreOptions,
 } from "@agentkit/scoring";
 import { mapPool } from "./pool.js";
+import { GOPLAUSIBLE_SPONSOR } from "./discovery.js";
 
 export interface AssembleOptions {
   endpointId?: string;
@@ -64,6 +65,8 @@ export async function assembleInput(
   log(`backfilling payments to ${payTo} (${windowDays}d)…`);
   const payments: PaymentRecord[] = [];
   for await (const p of indexer.backfill([payTo], windowStart, windowEnd)) {
+    // The facilitator sponsors fees but is never the real payer; exclude it.
+    if (p.payer === GOPLAUSIBLE_SPONSOR) continue;
     payments.push({
       payer: p.payer,
       amountUsdc: p.amountUsdc,
@@ -94,6 +97,7 @@ export async function assembleInput(
         firstSeen: meta.firstSeen,
         firstFunder: meta.firstFunder,
         distinctTokens: meta.distinctTokens,
+        authAddr: meta.authAddr,
       };
       if (meta.firstFunder) fundingEdges.push({ from: meta.firstFunder, to: payer });
     } catch {

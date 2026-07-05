@@ -23,6 +23,7 @@ export interface AccountMeta {
   distinctTokens?: number; // total-assets-opted-in
   firstFunder?: string;
   isRekeyed: boolean; // auth-addr present → key control delegated (a wash tell)
+  authAddr?: string; // the shared controlling key, for rekey-Sybil clustering
 }
 
 export interface FlowEdge {
@@ -71,6 +72,7 @@ export class AlgorandForensics {
     const meta: AccountMeta = {
       distinctTokens: a["total-assets-opted-in"],
       isRekeyed: Boolean(a["auth-addr"]),
+      authAddr: a["auth-addr"],
     };
     if (createdRound !== undefined) {
       const ts = await this.blockTime(createdRound);

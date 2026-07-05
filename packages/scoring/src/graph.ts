@@ -53,13 +53,14 @@ export class UnionFind {
 }
 
 /**
- * Cluster a set of payer wallets using funding edges. Two payers are unioned
- * when they share a funder, or when one funded the other. Returns a map of
- * payer → cluster-root.
+ * Cluster a set of payer wallets. Two payers are unioned when they share a
+ * funder, when one funded the other, or (Algorand) when they share an
+ * `auth-addr` — provably the same controlling key. Returns payer → cluster-root.
  */
 export function clusterPayers(
   payers: string[],
   fundingEdges: FlowEdge[] = [],
+  authAddrOf: Map<string, string> = new Map(),
 ): Map<string, string> {
   const uf = new UnionFind();
   const payerSet = new Set(payers);
@@ -83,6 +84,18 @@ export function clusterPayers(
     for (let i = 1; i < funded.length; i++) {
       uf.union(funded[0]!, funded[i]!);
     }
+  }
+  // shared auth-addr linkage (Algorand rekey Sybil signal)
+  const authToPayers = new Map<string, string[]>();
+  for (const p of payers) {
+    const auth = authAddrOf.get(p);
+    if (!auth) continue;
+    const list = authToPayers.get(auth) ?? [];
+    list.push(p);
+    authToPayers.set(auth, list);
+  }
+  for (const group of authToPayers.values()) {
+    for (let i = 1; i < group.length; i++) uf.union(group[0]!, group[i]!);
   }
   return uf.clustersOf(payers);
 }

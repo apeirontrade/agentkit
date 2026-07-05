@@ -27,6 +27,12 @@ export interface WalletMeta {
   distinctTokens?: number;
   /** Distinct counterparties the wallet has transacted with. */
   distinctCounterparties?: number;
+  /**
+   * Algorand rekey target (auth-addr). Wallets sharing one auth-addr are
+   * provably controlled by the same key → the same entity. The strongest
+   * Algorand-native Sybil signal (no EVM equivalent).
+   */
+  authAddr?: string;
 }
 
 /** A directed value-flow edge (funding or payout), used for clustering + cycles. */

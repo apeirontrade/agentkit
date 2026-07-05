@@ -13,9 +13,10 @@
       "name": "goplausible",
       "chain": "algorand",
       "settlement_kind": "atomic_group",
-      "addresses": [],
-      "verified": false,
-      "docs": "https://facilitator.goplausible.xyz/"
+      "addresses": ["ZMFK2OI7ZBD2U27ISERZC4S6LKM6WMFJPZQ4MYNJDZ2VNBNMBA67RA22AA"],
+      "verified": true,
+      "docs": "https://facilitator.goplausible.xyz/",
+      "note": "AVM feePayer/sponsor on every Algorand x402 resource (verified live 2026-07-05). Appears as tx submitter/fee-payer; the USDC axfer SENDER is the real payer."
     },
     {
       "name": "payai",

@@ -27,11 +27,20 @@ function payerRevenue(input: ScoringInput): Map<string, number> {
   return rev;
 }
 
+/** payer → auth-addr map, for rekey-based clustering. */
+function authAddrMap(input: ScoringInput): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const [payer, meta] of Object.entries(input.walletMeta ?? {})) {
+    if (meta.authAddr) m.set(payer, meta.authAddr);
+  }
+  return m;
+}
+
 /** Revenue grouped by cluster root. */
 function clusterRevenue(input: ScoringInput): { revByCluster: number[]; nClusters: number } {
   const rev = payerRevenue(input);
   const payers = [...rev.keys()];
-  const clusters = clusterPayers(payers, input.fundingEdges);
+  const clusters = clusterPayers(payers, input.fundingEdges, authAddrMap(input));
   const byCluster = new Map<string, number>();
   for (const [payer, r] of rev) {
     const root = clusters.get(payer)!;
@@ -44,8 +53,9 @@ function clusterRevenue(input: ScoringInput): { revByCluster: number[]; nCluster
 export function fundingGraph(input: ScoringInput, flags: string[]): SubScore {
   const rev = payerRevenue(input);
   const payers = [...rev.keys()];
-  const hasEdges = (input.fundingEdges?.length ?? 0) > 0;
-  const clusters = clusterPayers(payers, input.fundingEdges);
+  const authMap = authAddrMap(input);
+  const hasEdges = (input.fundingEdges?.length ?? 0) > 0 || authMap.size > 0;
+  const clusters = clusterPayers(payers, input.fundingEdges, authMap);
   const distinctRoots = new Set(clusters.values()).size;
   const sharedFundingRatio = payers.length > 0 ? 1 - distinctRoots / payers.length : 0;
 
