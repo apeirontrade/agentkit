@@ -1,32 +1,61 @@
 /**
  * Provenance x402 API — a deployable, secret-free service that sells organic-
- * revenue-quality / wash-risk scores for Algorand x402 endpoints.
+ * revenue-quality / wash-risk scores for Algorand x402 endpoints, in TIERS.
  *
  * Holds NO private keys: the resource server never signs — the GoPlausible
  * facilitator settles payments to our public payTo address. Safe to deploy
- * anywhere. Includes a `bazaar` discovery extension so GoPlausible auto-lists
- * this endpoint on the Global x402 Challenge leaderboard once it's public and
- * receives its first payment.
+ * anywhere. The 402 carries a `bazaar` discovery extension so GoPlausible
+ * auto-lists this endpoint on the Global x402 Challenge leaderboard once it's
+ * public and receives its first payment.
  *
- * Config (env): PORT, PROVENANCE_PAYTO, PRICE_USDC, FACILITATOR_URL, NETWORK.
+ * Pricing tiers (repricing was the #1 financial lever — see the financial plan):
+ *   GET /score/<addr>      $0.05  quick wash verdict (level + score + top flags)
+ *   GET /report/<addr>     $0.50  full report (all 8 signals, ORQ grade, drift)
+ *   GET /diligence/<addr>  $5.00  deep (full report + every indicator, wide window)
+ *
+ * Config (env): PORT, PROVENANCE_PAYTO, FACILITATOR_URL, NETWORK, TIER_MULT.
  */
 import http from "node:http";
 import { x402ResourceServer, HTTPFacilitatorClient } from "@x402-avm/core/server";
 import { registerExactAvmScheme } from "@x402-avm/avm/exact/server";
 import { decodePaymentSignatureHeader, encodePaymentRequiredHeader } from "@x402-avm/core/http";
-import { assessWashRisk } from "@agentkit/scoring";
+import { assessWashRisk, scoreEndpoint } from "@agentkit/scoring";
 import { assembleInput } from "@agentkit/provenance";
 
 const PORT = Number(process.env.PORT ?? 8402);
 const PAY_TO = process.env.PROVENANCE_PAYTO ?? "K5HIZPOUUUBQ5WJ6I3DT6NGIQUMALYJYSVVBY7CXA3BYBWY6225DNNBDSA";
-const PRICE_USDC = process.env.PRICE_USDC ?? "0.01";
 const FACILITATOR_URL = process.env.FACILITATOR_URL ?? "https://facilitator.goplausible.xyz";
 const NETWORK = process.env.NETWORK ?? "algorand:wGHE2Pwdvd7S12BL5FaOP20EGYesN73ktiC1qzkkit8=";
 const SPONSOR = "ZMFK2OI7ZBD2U27ISERZC4S6LKM6WMFJPZQ4MYNJDZ2VNBNMBA67RA22AA";
-const PRICE_ATOMIC = String(Math.round(Number(PRICE_USDC) * 1e6));
+// A global price multiplier so pricing can be dialed without a redeploy.
+const TIER_MULT = Number(process.env.TIER_MULT ?? 1);
 const ADDR_RE = /^[A-Z2-7]{58}$/;
 
-const BAZAAR_EXTENSION = {
+type Depth = "quick" | "full" | "deep";
+const TIERS: Record<string, { priceUsdc: number; depth: Depth; label: string }> = {
+  score: { priceUsdc: 0.05, depth: "quick", label: "quick wash verdict" },
+  report: { priceUsdc: 0.5, depth: "full", label: "full scored report" },
+  diligence: { priceUsdc: 5.0, depth: "deep", label: "deep diligence" },
+};
+
+const atomic = (usdc: number) => String(Math.round(usdc * TIER_MULT * 1e6));
+
+function requirementsFor(resourceUrl: string, priceUsdc: number, description: string) {
+  return {
+    scheme: "exact",
+    network: NETWORK,
+    amount: atomic(priceUsdc),
+    asset: "31566704",
+    payTo: PAY_TO,
+    maxTimeoutSeconds: 300,
+    resource: resourceUrl,
+    description,
+    mimeType: "application/json",
+    extra: { name: "USDC", decimals: 6, feePayer: SPONSOR },
+  };
+}
+
+const bazaarExtension = (depth: Depth) => ({
   bazaar: {
     info: {
       input: { type: "http", method: "GET", pathParams: { address: "Algorand endpoint payTo address" } },
@@ -34,44 +63,50 @@ const BAZAAR_EXTENSION = {
         type: "json",
         example: {
           endpoint: "MERCHANT_ADDRESS",
-          washRisk: { level: "critical", score: 98, topIndicators: [{ name: "concentration", detail: "top cluster holds 100% of revenue" }] },
+          tier: depth,
+          washRisk: { level: "critical", score: 98 },
           onChain: { payments: 207, payers: 2, clusters: 1 },
         },
       },
     },
-    schema: {
-      $schema: "https://json-schema.org/draft/2020-12/schema",
-      type: "object",
-      properties: {
-        input: {
-          type: "object",
-          properties: { address: { type: "string", description: "58-char Algorand address to score" } },
-          required: ["address"],
-        },
-      },
-    },
   },
-};
-
-function requirementsFor(resourceUrl: string) {
-  return {
-    scheme: "exact",
-    network: NETWORK,
-    amount: PRICE_ATOMIC,
-    asset: "31566704",
-    payTo: PAY_TO,
-    maxTimeoutSeconds: 300,
-    resource: resourceUrl,
-    description: "Provenance organic-revenue-quality / wash-risk score for an Algorand x402 endpoint",
-    mimeType: "application/json",
-    extra: { name: "USDC", decimals: 6, feePayer: SPONSOR },
-  };
-}
+});
 
 function baseUrl(req: http.IncomingMessage): string {
   const host = req.headers.host ?? `localhost:${PORT}`;
   const proto = (req.headers["x-forwarded-proto"] as string) ?? "http";
   return `${proto}://${host}`;
+}
+
+async function buildResult(target: string, depth: Depth) {
+  const wide = depth === "deep";
+  const { input, stats } = await assembleInput(target, {
+    windowDays: wide ? 1095 : 730,
+    maxEnrichedPayers: wide ? 150 : 60,
+    now: new Date(),
+  });
+  const wash = assessWashRisk(input);
+  const base = {
+    endpoint: target,
+    tier: depth,
+    washRisk: { level: wash.level, score: wash.score },
+    onChain: { payments: stats.nPayments, payers: stats.nPayers, clusters: wash.nPayerClusters },
+    methodology: "provenance v0.1 · organic-revenue-quality",
+  };
+  if (depth === "quick") {
+    return { ...base, washRisk: { ...base.washRisk, topIndicators: wash.indicators.slice(0, 3).map((i) => i.detail) } };
+  }
+  // full / deep: add the graded ORQ + every wash indicator
+  const scored = scoreEndpoint(input, { bootstrapRounds: depth === "deep" ? 300 : 150, seed: 1 });
+  return {
+    ...base,
+    grade: scored.grade,
+    orq: scored.orq,
+    ci: scored.orq !== null ? [scored.ciLow, scored.ciHigh] : null,
+    signals: scored.subscores,
+    washIndicators: depth === "deep" ? wash.indicators : wash.indicators.slice(0, 6),
+    flags: scored.flags,
+  };
 }
 
 async function main() {
@@ -88,29 +123,31 @@ async function main() {
       return;
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {
-      res.writeHead(200, { "content-type": "application/json" }).end(
-        JSON.stringify({
-          service: "Provenance x402 API",
-          description: "Pay to get an organic-revenue-quality / wash-risk score for any Algorand x402 endpoint.",
-          usage: `GET /score/<ALGORAND_ADDRESS>  →  ${PRICE_USDC} USDC via x402 (GoPlausible)`,
-          network: NETWORK,
-          payTo: PAY_TO,
-          methodology: "provenance v0.1 · 8-signal ORQ + wash-risk",
-        }, null, 2),
-      );
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+        service: "Provenance x402 API",
+        description: "Pay to get an organic-revenue-quality / wash-risk score for any Algorand x402 endpoint.",
+        tiers: Object.fromEntries(Object.entries(TIERS).map(([k, t]) => [
+          `GET /${k}/<ADDRESS>`, `${(t.priceUsdc * TIER_MULT).toFixed(2)} USDC — ${t.label}`,
+        ])),
+        network: NETWORK,
+        payTo: PAY_TO,
+        methodology: "provenance v0.1 · 8-signal ORQ + wash-risk",
+      }, null, 2));
       return;
     }
 
-    const m = url.pathname.match(/^\/score\/(.+)$/);
-    if (!m || !ADDR_RE.test(m[1]!)) {
-      res.writeHead(404, { "content-type": "application/json" }).end(
-        JSON.stringify({ error: "GET /score/<58-char Algorand address>" }),
-      );
+    const m = url.pathname.match(/^\/(score|report|diligence)\/(.+)$/);
+    if (!m || !TIERS[m[1]!] || !ADDR_RE.test(m[2]!)) {
+      res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({
+        error: "GET /{score|report|diligence}/<58-char Algorand address>",
+        tiers: Object.fromEntries(Object.entries(TIERS).map(([k, t]) => [k, `${(t.priceUsdc * TIER_MULT).toFixed(2)} USDC`])),
+      }));
       return;
     }
-    const target = m[1]!;
+    const tier = TIERS[m[1]!]!;
+    const target = m[2]!;
     const resourceUrl = `${baseUrl(req)}${url.pathname}`;
-    const requirements = requirementsFor(resourceUrl);
+    const requirements = requirementsFor(resourceUrl, tier.priceUsdc, `Provenance ${tier.label} for an Algorand x402 endpoint`);
 
     const paymentHeader = req.headers["payment-signature"] as string | undefined;
     if (!paymentHeader) {
@@ -119,12 +156,9 @@ async function main() {
         error: "Payment required",
         resource: { url: resourceUrl, description: requirements.description, mimeType: "application/json" },
         accepts: [requirements],
-        extensions: BAZAAR_EXTENSION,
+        extensions: bazaarExtension(tier.depth),
       };
-      res.writeHead(402, {
-        "content-type": "application/json",
-        "payment-required": encodePaymentRequiredHeader(required as never),
-      });
+      res.writeHead(402, { "content-type": "application/json", "payment-required": encodePaymentRequiredHeader(required as never) });
       res.end("{}");
       return;
     }
@@ -133,21 +167,12 @@ async function main() {
       const payload = decodePaymentSignatureHeader(paymentHeader);
       const settle = await server.settlePayment(payload as never, requirements as never);
       if (!settle.success) {
-        res.writeHead(402, { "content-type": "application/json" }).end(
-          JSON.stringify({ error: "settlement failed", detail: settle }),
-        );
+        res.writeHead(402, { "content-type": "application/json" }).end(JSON.stringify({ error: "settlement failed", detail: settle }));
         return;
       }
-      const { input, stats } = await assembleInput(target, { windowDays: 730, maxEnrichedPayers: 60, now: new Date() });
-      const wash = assessWashRisk(input);
+      const result = await buildResult(target, tier.depth);
       res.writeHead(200, { "content-type": "application/json", "x-payment-settled": settle.transaction ?? "" }).end(
-        JSON.stringify({
-          endpoint: target,
-          washRisk: { level: wash.level, score: wash.score, topIndicators: wash.indicators.slice(0, 3) },
-          onChain: { payments: stats.nPayments, payers: stats.nPayers, clusters: wash.nPayerClusters },
-          settlement: settle.transaction,
-          methodology: "provenance v0.1 · organic-revenue-quality",
-        }, null, 2),
+        JSON.stringify({ ...result, settlement: settle.transaction }, null, 2),
       );
     } catch (e) {
       res.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: (e as Error).message }));
@@ -155,7 +180,8 @@ async function main() {
   });
 
   httpServer.listen(PORT, () => {
-    console.log(`Provenance x402 API :${PORT} · ${PRICE_USDC} USDC/score · payTo ${PAY_TO.slice(0, 10)}…`);
+    const t = Object.entries(TIERS).map(([k, v]) => `${k} $${(v.priceUsdc * TIER_MULT).toFixed(2)}`).join(" · ");
+    console.log(`Provenance x402 API :${PORT} · tiers: ${t} · payTo ${PAY_TO.slice(0, 10)}…`);
   });
 }
 
