@@ -11,6 +11,9 @@ importers:
       '@agentkit/chain-indexer':
         specifier: workspace:*
         version: link:packages/chain-indexer
+      '@agentkit/scoring':
+        specifier: workspace:*
+        version: link:packages/scoring
       '@agentkit/x402-core':
         specifier: workspace:*
         version: link:packages/x402-core
@@ -79,6 +82,19 @@ importers:
         version: 2.1.9(@types/node@22.20.0)
 
   packages/facilitators:
+    devDependencies:
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)
+
+  packages/scoring:
+    dependencies:
+      '@agentkit/x402-core':
+        specifier: workspace:*
+        version: link:../x402-core
     devDependencies:
       typescript:
         specifier: ^5.6.3
