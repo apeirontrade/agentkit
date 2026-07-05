@@ -40,20 +40,54 @@ const TIERS: Record<string, { priceUsdc: number; depth: Depth; label: string }> 
 
 const atomic = (usdc: number) => String(Math.round(usdc * TIER_MULT * 1e6));
 
-function requirementsFor(resourceUrl: string, priceUsdc: number, description: string) {
-  return {
-    scheme: "exact",
+/**
+ * Multi-chain collection (verified: the GoPlausible facilitator settles Base,
+ * Solana AND Algorand — one facilitator, three rails, no bridge). Algorand is
+ * always advertised; Base/Solana activate only when a payTo address for that
+ * chain is configured via env. Funds land natively per chain — read-don't-bridge.
+ */
+const BASE_PAYTO = process.env.BASE_PAYTO ?? "";
+const SOLANA_PAYTO = process.env.SOLANA_PAYTO ?? "";
+const CHAIN_RAILS = [
+  {
     network: NETWORK,
-    amount: atomic(priceUsdc),
-    asset: "31566704",
+    asset: "31566704", // USDC ASA
     payTo: PAY_TO,
+    extra: { name: "USDC", decimals: 6, feePayer: SPONSOR },
+  },
+  ...(BASE_PAYTO
+    ? [{
+        network: "eip155:8453",
+        asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // USDC on Base
+        payTo: BASE_PAYTO,
+        extra: { name: "USDC", version: "2" },
+      }]
+    : []),
+  ...(SOLANA_PAYTO
+    ? [{
+        network: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+        asset: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC SPL
+        payTo: SOLANA_PAYTO,
+        extra: { feePayer: "8a8fFNfk2AGS7rgVv1BoqPUWnzQuoCrShJV8tSE6RAYi" },
+      }]
+    : []),
+];
+
+function acceptsFor(resourceUrl: string, priceUsdc: number, description: string) {
+  return CHAIN_RAILS.map((rail) => ({
+    scheme: "exact",
+    network: rail.network,
+    amount: atomic(priceUsdc),
+    asset: rail.asset,
+    payTo: rail.payTo,
     maxTimeoutSeconds: 300,
     resource: resourceUrl,
     description,
     mimeType: "application/json",
-    extra: { name: "USDC", decimals: 6, feePayer: SPONSOR },
-  };
+    extra: rail.extra,
+  }));
 }
+
 
 const bazaarExtension = (depth: Depth) => ({
   bazaar: {
@@ -113,6 +147,15 @@ async function main() {
   const facilitator = new HTTPFacilitatorClient({ url: FACILITATOR_URL });
   const server = new x402ResourceServer(facilitator);
   registerExactAvmScheme(server, { networks: [NETWORK as `${string}:${string}`] });
+  if (BASE_PAYTO || SOLANA_PAYTO) {
+    // Rails advertise in accepts[] once a payTo is set; settlement additionally
+    // needs the EVM/SVM server scheme registered here (verify SDK compatibility
+    // at that point — the @x402/evm v2.17 client was incompatible with this core).
+    console.warn(
+      "⚠ BASE_PAYTO/SOLANA_PAYTO set: advertising those rails, but EVM/SVM server " +
+        "schemes are not yet registered — settlement on those chains will fail until added.",
+    );
+  }
   await server.initialize();
 
   const httpServer = http.createServer(async (req, res) => {
@@ -147,15 +190,16 @@ async function main() {
     const tier = TIERS[m[1]!]!;
     const target = m[2]!;
     const resourceUrl = `${baseUrl(req)}${url.pathname}`;
-    const requirements = requirementsFor(resourceUrl, tier.priceUsdc, `Provenance ${tier.label} for an Algorand x402 endpoint`);
+    const description = `Provenance ${tier.label} for an Algorand x402 endpoint`;
+    const accepts = acceptsFor(resourceUrl, tier.priceUsdc, description);
 
     const paymentHeader = req.headers["payment-signature"] as string | undefined;
     if (!paymentHeader) {
       const required = {
         x402Version: 2,
         error: "Payment required",
-        resource: { url: resourceUrl, description: requirements.description, mimeType: "application/json" },
-        accepts: [requirements],
+        resource: { url: resourceUrl, description, mimeType: "application/json" },
+        accepts,
         extensions: bazaarExtension(tier.depth),
       };
       res.writeHead(402, { "content-type": "application/json", "payment-required": encodePaymentRequiredHeader(required as never) });
@@ -165,6 +209,9 @@ async function main() {
 
     try {
       const payload = decodePaymentSignatureHeader(paymentHeader);
+      // Settle against the rail the payer actually chose (multi-chain accepts).
+      const paidNetwork = (payload as { network?: string }).network;
+      const requirements = accepts.find((a) => a.network === paidNetwork) ?? accepts[0]!;
       const settle = await server.settlePayment(payload as never, requirements as never);
       if (!settle.success) {
         res.writeHead(402, { "content-type": "application/json" }).end(JSON.stringify({ error: "settlement failed", detail: settle }));
