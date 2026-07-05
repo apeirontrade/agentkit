@@ -19,13 +19,16 @@
     "indexer:smoke": "tsx scripts/indexer-smoke.ts",
     "scoring:demo": "tsx scripts/scoring-demo.ts",
     "provenance:score": "tsx scripts/provenance-score.ts",
-    "provenance:registry": "tsx scripts/provenance-registry.ts"
+    "provenance:registry": "tsx scripts/provenance-registry.ts",
+    "provenance:snapshot": "tsx scripts/provenance-snapshot.ts",
+    "algo:whoami": "tsx scripts/algo-whoami.ts"
   },
   "dependencies": {
     "@agentkit/chain-indexer": "workspace:*",
     "@agentkit/provenance": "workspace:*",
     "@agentkit/scoring": "workspace:*",
-    "@agentkit/x402-core": "workspace:*"
+    "@agentkit/x402-core": "workspace:*",
+    "algosdk": "^3.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
