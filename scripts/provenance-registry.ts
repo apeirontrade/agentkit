@@ -37,12 +37,14 @@ async function main() {
       });
       const onChain = stats.nPayments;
       const drift = m.settleCount > 0 ? ` (facilitator claims ${m.settleCount}, on-chain ${onChain})` : "";
+      const wr = result.washRisk;
       console.log(
         `  → grade ${result.grade}  ORQ ${result.orq ?? "—"}` +
           (result.orq !== null ? ` (CI ${result.ciLow}–${result.ciHigh})` : "") +
-          `  ${onChain} payments / ${stats.nPayers} payers / ${result.nPayerClusters} clusters${drift}`,
+          `  |  WASH RISK ${wr.level.toUpperCase()} (${wr.score}/100)` +
+          `  ·  ${onChain} payments / ${stats.nPayers} payers / ${result.nPayerClusters} clusters${drift}`,
       );
-      for (const f of result.flags.slice(0, 3)) console.log(`     • ${f}`);
+      for (const ind of wr.indicators.slice(0, 3)) console.log(`     ⚑ ${ind.detail}`);
     } catch (e) {
       console.log(`  → error: ${(e as Error).message}`);
     }

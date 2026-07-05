@@ -70,6 +70,28 @@ export interface SubScore {
   dataBacked: boolean; // false when the signal ran on absent/optional data
 }
 
+/** A single wash-traffic red flag, meaningful at ANY endpoint size. */
+export interface WashIndicator {
+  name: string;
+  contribution: number; // 0..1 severity for this indicator
+  detail: string; // human-readable evidence
+}
+
+export type WashLevel = "low" | "medium" | "high" | "critical";
+
+/**
+ * Wash-risk assessment — computed on raw facts, so it is available for tiny
+ * endpoints below the ORQ grading floor. This is the useful-today output: it
+ * says "207 payments but all one fresh wallet" even when we won't grade.
+ */
+export interface WashRiskAssessment {
+  level: WashLevel;
+  score: number; // 0..100, higher = more wash-like
+  indicators: WashIndicator[];
+  nPayers: number;
+  nPayerClusters: number;
+}
+
 export interface ScoreResult {
   endpointId: string;
   grade: Grade;
@@ -77,6 +99,8 @@ export interface ScoreResult {
   ciLow: number | null;
   ciHigh: number | null;
   subscores: Record<string, SubScore>;
+  /** Always present, even when grade is INSUFFICIENT_DATA. */
+  washRisk: WashRiskAssessment;
   nPayments: number;
   nPayerClusters: number;
   methodologyVersion: string;

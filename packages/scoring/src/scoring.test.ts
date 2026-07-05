@@ -164,6 +164,25 @@ describe("ORQ scoring — organic vs wash", () => {
     expect(tiny.grade).toBe("INSUFFICIENT_DATA");
     expect(tiny.orq).toBeNull();
   });
+
+  it("computes wash risk even below the grading floor", () => {
+    // A tiny single-payer endpoint: no grade, but wash risk must fire.
+    const p0 = organicInput().payments[0]!;
+    const singlePayer = scoreEndpoint({
+      ...organicInput(),
+      payments: Array.from({ length: 8 }, (_, i) => ({ ...p0, txHash: `x${i}` })),
+    });
+    expect(singlePayer.grade).toBe("INSUFFICIENT_DATA");
+    expect(singlePayer.washRisk.level).toBe("critical");
+    expect(singlePayer.washRisk.nPayers).toBe(1);
+    expect(singlePayer.washRisk.indicators.some((i) => i.name === "few_payers")).toBe(true);
+  });
+
+  it("rates organic low-risk and wash high-risk", () => {
+    expect(["low", "medium"]).toContain(organic.washRisk.level);
+    expect(["high", "critical"]).toContain(wash.washRisk.level);
+    expect(wash.washRisk.score).toBeGreaterThan(organic.washRisk.score + 25);
+  });
 });
 
 describe("stats sanity", () => {

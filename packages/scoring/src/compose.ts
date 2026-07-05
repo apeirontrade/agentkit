@@ -8,6 +8,7 @@ import {
   MIN_PAYER_CLUSTERS,
 } from "./types.js";
 import { runSignals, SIGNAL_WEIGHTS, clusterRevenue } from "./signals.js";
+import { assessWashRisk } from "./wash-risk.js";
 import { percentile } from "./stats.js";
 
 const EPS = 0.02; // floor for ln() so one zero signal caps, not annihilates, the score
@@ -61,6 +62,7 @@ export function scoreEndpoint(input: ScoringInput, opts: ScoreOptions = {}): Sco
   const base: Omit<ScoreResult, "grade" | "orq" | "ciLow" | "ciHigh"> = {
     endpointId: input.endpointId,
     subscores,
+    washRisk: assessWashRisk(input), // always available, even below the grading floor
     nPayments,
     nPayerClusters: nClusters,
     methodologyVersion: METHODOLOGY_VERSION,
