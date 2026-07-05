@@ -15,9 +15,11 @@
     "db:down": "docker compose -f docker-compose.dev.yml down",
     "db:generate": "pnpm --filter @agentkit/db generate",
     "db:migrate": "pnpm --filter @agentkit/db migrate",
-    "x402:smoke": "tsx scripts/x402-apify-smoke.ts"
+    "x402:smoke": "tsx scripts/x402-apify-smoke.ts",
+    "indexer:smoke": "tsx scripts/indexer-smoke.ts"
   },
   "dependencies": {
+    "@agentkit/chain-indexer": "workspace:*",
     "@agentkit/x402-core": "workspace:*"
   },
   "devDependencies": {
