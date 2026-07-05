@@ -5,12 +5,17 @@ Full plan: `~/agentic-payments-roadmaps/0-MASTER-BUILD-SPEC.md`.
 
 ## Status
 
-Foundation tickets 1–3 complete (2026-07-04):
+Shared foundation complete (2026-07-04) — 5 packages, 27 tests green, full workspace typecheck clean:
 - ✅ Monorepo skeleton — pnpm workspaces, turbo, tsconfig.base, CI, docker-compose.
-- ✅ `@agentkit/shared` — USDC money math (BigInt, 13 passing tests), zod env loader, pino logger, pg-boss queue wrapper.
+- ✅ `@agentkit/shared` — USDC money math (BigInt, 13 tests), zod env loader, pino logger, pg-boss queue wrapper.
 - ✅ `@agentkit/db` — Drizzle schema + raw-SQL core migration (partitioned `payments`, `wallets`, `facilitators`, `endpoints`, `funding_edges`), applied and verified against Postgres 16.
+- ✅ `@agentkit/facilitators` — typed x402-facilitator registry (address-indexed, empirically grown).
+- ✅ `@agentkit/x402-core` — payer (real `@x402/fetch` v2, hard per-call ceiling), Apify prepaid-token buyer, settlement classifier, EIP-3009 decoding, 402 probe. Base USDC + AuthorizationUsed topic self-verified vs viem.
+- ✅ `@agentkit/chain-indexer` — Base (viem getLogs) + Algorand (Nodely REST) USDC ingestion, reorg-safe. **Verified live against Algorand mainnet.**
 
-Next: ticket 4 (`@agentkit/facilitators`), ticket 5 (`@agentkit/x402-core` payer — the portfolio-de-risking milestone: one Apify Actor call paid via x402 on Base).
+Smoke scripts: `pnpm x402:smoke` (ticket 5 — needs a funded Base key), `pnpm indexer:smoke` (read-only).
+
+Next per the backlog: product apps begin — `apps/jobsmith` (order pipeline + storefront) or `apps/provenance` (scoring engine over the chain-indexer). Ticket 5's live payment run is the gating milestone before Jobsmith automation and needs a funded wallet.
 
 ## Quickstart
 
