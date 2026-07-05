@@ -12,10 +12,15 @@ Shared foundation complete (2026-07-04) — 5 packages, 27 tests green, full wor
 - ✅ `@agentkit/facilitators` — typed x402-facilitator registry (address-indexed, empirically grown).
 - ✅ `@agentkit/x402-core` — payer (real `@x402/fetch` v2, hard per-call ceiling), Apify prepaid-token buyer, settlement classifier, EIP-3009 decoding, 402 probe. Base USDC + AuthorizationUsed topic self-verified vs viem.
 - ✅ `@agentkit/chain-indexer` — Base (viem getLogs) + Algorand (Nodely REST) USDC ingestion, reorg-safe. **Verified live against Algorand mainnet.**
+- ✅ `@agentkit/scoring` — Provenance Desk's 8-signal Organic Revenue Quality engine (union-find clustering, self-dealing cycles, retention, temporal, wallet fingerprint, Benford, concentration, cross-endpoint rings) → weighted geometric mean → ORQ + grade + bootstrap CI. **Proven on fixtures: organic → A (86.7), wash → F (17.3).** Algorand-first.
 
-Smoke scripts: `pnpm x402:smoke` (ticket 5 — needs a funded Base key), `pnpm indexer:smoke` (read-only).
+6 packages, 37 tests green. Smoke/demo scripts: `pnpm x402:smoke` (needs a funded Base key), `pnpm indexer:smoke` (read-only), `pnpm scoring:demo` (pure).
 
-Next per the backlog: product apps begin — `apps/jobsmith` (order pipeline + storefront) or `apps/provenance` (scoring engine over the chain-indexer). Ticket 5's live payment run is the gating milestone before Jobsmith automation and needs a funded wallet.
+Next per the backlog: wire scoring to live data (`assembleInput` querying the chain-indexer + per-wallet funding/age lookups on Algorand), then the Provenance leaderboard + attestations, or start `apps/jobsmith`. Ticket 5's live payment run gates Jobsmith automation and needs a funded wallet.
+
+### Known v0.1 refinements
+- Robotic-retention detection has a week-boundary edge (didn't fire on the metronomic fixture); the geometric mean still grades it F via other signals. Refine cohort bucketing.
+- `assembleInput` (DB/indexer → ScoringInput, incl. Algorand funding-edge + wallet-age derivation) is not yet built — the engine is proven on fixtures, not yet on live mainnet endpoints.
 
 ## Quickstart
 
