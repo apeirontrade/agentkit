@@ -1,0 +1,37 @@
+{
+  "note": "Registry of x402 settlement facilitators. `addresses` are the on-chain submitters/fee-payers/co-signers used to CLASSIFY a USDC transfer as an x402 settlement. Grown empirically: any address that repeatedly submits transferWithAuthorization (EVM) or co-signs USDC atomic groups (Algorand) to many distinct payTo wallets is a candidate. Empty arrays are expected until bootstrapped from real chain data — see scripts/bootstrap-facilitators. Contract addresses (USDC) are NOT facilitators; see @agentkit/x402-core constants.",
+  "facilitators": [
+    {
+      "name": "coinbase_cdp",
+      "chain": "base",
+      "settlement_kind": "eip3009",
+      "addresses": [],
+      "verified": false,
+      "docs": "https://docs.cdp.coinbase.com/x402/welcome"
+    },
+    {
+      "name": "goplausible",
+      "chain": "algorand",
+      "settlement_kind": "atomic_group",
+      "addresses": [],
+      "verified": false,
+      "docs": "https://facilitator.goplausible.xyz/"
+    },
+    {
+      "name": "payai",
+      "chain": "solana",
+      "settlement_kind": "spl_transfer",
+      "addresses": [],
+      "verified": false,
+      "docs": ""
+    },
+    {
+      "name": "rapid402",
+      "chain": "solana",
+      "settlement_kind": "spl_transfer",
+      "addresses": [],
+      "verified": false,
+      "docs": ""
+    }
+  ]
+}
