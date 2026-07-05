@@ -7,6 +7,16 @@ from urllib.parse import urlparse
 snap = json.load(open("scratch/provenance-snapshot.json"))
 rows = snap["rows"]
 
+# Merge in delivery-probe results (we paid endpoints; did they return valid data?)
+delivery = {}
+try:
+    dj = json.load(open("scratch/provenance-delivery.json"))
+    for r in dj.get("results", []):
+        delivery[r["payTo"]] = r
+except FileNotFoundError:
+    pass
+n_paid = sum(1 for r in delivery.values() if r.get("delivered") is True)
+
 SEV = {"low": "#3FB77E", "medium": "#D8A73A", "high": "#E27C3A", "critical": "#E5484D"}
 taken = datetime.fromisoformat(snap["takenAt"].replace("Z", "+00:00"))
 taken_str = taken.strftime("%B %-d, %Y · %H:%M UTC")
@@ -51,6 +61,14 @@ for i, r in enumerate(rows, 1):
     if len(desc) > 68:
         desc = desc[:66].rstrip() + "…"
     flag = r["topFlags"][0] if r["topFlags"] else ""
+    dv = delivery.get(addr, {})
+    dstate = dv.get("delivered")
+    if dstate is True:
+        deliver_badge = f'<span class="deliver yes" title="{esc(dv.get("snippet",""))}">✓ delivers · paid {dv.get("priceUsdc","?")}</span>'
+    elif dstate is False:
+        deliver_badge = '<span class="deliver no">✗ no delivery</span>'
+    else:
+        deliver_badge = ''
     cards.append(f"""
     <article class="card" style="--sev:{col}">
       <div class="stripe"></div>
@@ -64,6 +82,7 @@ for i, r in enumerate(rows, 1):
             </div>
           </div>
           <div class="verdicts">
+            {deliver_badge}
             <span class="grade {grade_cls}">{esc(grade_txt)}</span>
             <span class="wash" style="--sev:{col}">
               <span class="wash-level">{sev}</span>
@@ -153,6 +172,9 @@ doc = f"""<title>Provenance — Algorand x402 Revenue Quality</title>
   .tile.warn .n {{ color:{SEV['critical']}; }}
 
   /* Section label */
+  .probe-note {{ margin:0 0 40px; padding:16px 18px; background:var(--elev); border:1px solid var(--line);
+                border-radius:12px; color:var(--muted); font-size:14px; max-width:none; }}
+  .probe-note b {{ color:var(--accent-ink); font-family:var(--mono); }}
   .seclabel {{ display:flex; align-items:center; gap:14px; margin:8px 0 16px; }}
   .seclabel h2 {{ font-family:var(--mono); font-size:12px; letter-spacing:.16em; text-transform:uppercase;
                  color:var(--muted); font-weight:600; margin:0; white-space:nowrap; }}
@@ -176,6 +198,11 @@ doc = f"""<title>Provenance — Algorand x402 Revenue Quality</title>
   .host {{ color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:42vw; }}
   .addr {{ color:var(--faint); }}
   .verdicts {{ display:flex; align-items:center; gap:12px; flex-shrink:0; }}
+  .deliver {{ font-family:var(--mono); font-size:10px; letter-spacing:.02em; padding:5px 8px; border-radius:7px;
+             white-space:nowrap; border:1px solid var(--line); cursor:default; }}
+  .deliver.yes {{ color:{SEV['low']}; border-color:color-mix(in srgb,{SEV['low']} 38%,transparent);
+                 background:color-mix(in srgb,{SEV['low']} 10%,transparent); }}
+  .deliver.no {{ color:{SEV['high']}; border-color:color-mix(in srgb,{SEV['high']} 38%,transparent); }}
   .grade {{ font-family:var(--mono); font-size:11px; letter-spacing:.03em; padding:5px 9px; border-radius:7px;
            white-space:nowrap; border:1px solid var(--line); }}
   .grade.na {{ color:var(--grade-na); }}
@@ -239,6 +266,8 @@ doc = f"""<title>Provenance — Algorand x402 Revenue Quality</title>
     <div class="tile"><div class="n">{gradeable}</div><div class="l">with organic demand</div></div>
     <div class="tile warn"><div class="n">{counts['critical']+counts['high']}</div><div class="l">high / critical wash risk</div></div>
   </div>
+
+  <p class="probe-note">We paid <b>{n_paid}</b> of these endpoints a real USDC micropayment to verify delivery. Several return genuinely useful data — a BTC price proof, on-chain account intelligence, prediction-market arbitrage — yet still rate high wash risk. <em class="term">Delivering data and having organic revenue are different things.</em> An endpoint can work perfectly and still have no real customers.</p>
 
   <div class="seclabel">
     <h2>Endpoint ledger</h2>
