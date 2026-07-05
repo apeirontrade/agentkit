@@ -21,6 +21,8 @@
     "provenance:score": "tsx scripts/provenance-score.ts",
     "provenance:registry": "tsx scripts/provenance-registry.ts",
     "provenance:snapshot": "tsx scripts/provenance-snapshot.ts",
+    "provenance:cycle": "tsx scripts/provenance-cycle.ts",
+    "provenance:delivery": "tsx scripts/provenance-delivery.ts",
     "algo:whoami": "tsx scripts/algo-whoami.ts"
   },
   "dependencies": {
