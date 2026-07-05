@@ -49,6 +49,31 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)
 
+  apps/provenance-api:
+    dependencies:
+      '@agentkit/provenance':
+        specifier: workspace:*
+        version: link:../../packages/provenance
+      '@agentkit/scoring':
+        specifier: workspace:*
+        version: link:../../packages/scoring
+      '@x402-avm/avm':
+        specifier: ^2.6.1
+        version: 2.6.1
+      '@x402-avm/core':
+        specifier: ^2.6.1
+        version: 2.6.1
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+
   packages/chain-indexer:
     dependencies:
       '@agentkit/facilitators':
