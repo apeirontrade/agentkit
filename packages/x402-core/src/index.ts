@@ -5,3 +5,4 @@ export * from "./payer.js";
 export * from "./apify.js";
 export * from "./classify.js";
 export * from "./probe.js";
+export * from "./avm.js";

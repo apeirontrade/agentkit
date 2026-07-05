@@ -28,6 +28,9 @@
     "@agentkit/provenance": "workspace:*",
     "@agentkit/scoring": "workspace:*",
     "@agentkit/x402-core": "workspace:*",
+    "@tinymanorg/tinyman-js-sdk": "^5.1.4",
+    "@x402-avm/avm": "^2.6.1",
+    "@x402-avm/core": "^2.6.1",
     "algosdk": "^3.0.0"
   },
   "devDependencies": {
