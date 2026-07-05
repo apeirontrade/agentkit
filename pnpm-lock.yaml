@@ -11,6 +11,9 @@ importers:
       '@agentkit/chain-indexer':
         specifier: workspace:*
         version: link:packages/chain-indexer
+      '@agentkit/provenance':
+        specifier: workspace:*
+        version: link:packages/provenance
       '@agentkit/scoring':
         specifier: workspace:*
         version: link:packages/scoring
@@ -82,6 +85,22 @@ importers:
         version: 2.1.9(@types/node@22.20.0)
 
   packages/facilitators:
+    devDependencies:
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)
+
+  packages/provenance:
+    dependencies:
+      '@agentkit/chain-indexer':
+        specifier: workspace:*
+        version: link:../chain-indexer
+      '@agentkit/scoring':
+        specifier: workspace:*
+        version: link:../scoring
     devDependencies:
       typescript:
         specifier: ^5.6.3

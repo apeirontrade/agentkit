@@ -17,10 +17,12 @@
     "db:migrate": "pnpm --filter @agentkit/db migrate",
     "x402:smoke": "tsx scripts/x402-apify-smoke.ts",
     "indexer:smoke": "tsx scripts/indexer-smoke.ts",
-    "scoring:demo": "tsx scripts/scoring-demo.ts"
+    "scoring:demo": "tsx scripts/scoring-demo.ts",
+    "provenance:score": "tsx scripts/provenance-score.ts"
   },
   "dependencies": {
     "@agentkit/chain-indexer": "workspace:*",
+    "@agentkit/provenance": "workspace:*",
     "@agentkit/scoring": "workspace:*",
     "@agentkit/x402-core": "workspace:*"
   },
