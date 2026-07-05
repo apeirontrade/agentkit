@@ -106,6 +106,20 @@ const bazaarExtension = (depth: Depth) => ({
   },
 });
 
+/** Naive in-memory free-tier limiter: 30 checks/hour/IP. */
+const freeBuckets = new Map<string, { count: number; resetAt: number }>();
+function allowFree(ip: string): boolean {
+  const now = Date.now();
+  const b = freeBuckets.get(ip);
+  if (!b || now > b.resetAt) {
+    freeBuckets.set(ip, { count: 1, resetAt: now + 3600_000 });
+    return true;
+  }
+  if (b.count >= 30) return false;
+  b.count++;
+  return true;
+}
+
 function baseUrl(req: http.IncomingMessage): string {
   const host = req.headers.host ?? `localhost:${PORT}`;
   const proto = (req.headers["x-forwarded-proto"] as string) ?? "http";
@@ -163,6 +177,39 @@ async function main() {
 
     if (url.pathname === "/health") {
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    // FREE rate-limited quick check — the Layer-0 funnel the public MCP server
+    // calls. 30 req/hour/IP; paid tiers carry the depth.
+    const freeM = url.pathname.match(/^\/check\/(.+)$/);
+    if (freeM) {
+      const target = freeM[1]!;
+      if (!ADDR_RE.test(target)) {
+        res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: "invalid Algorand address" }));
+        return;
+      }
+      const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? req.socket.remoteAddress ?? "?";
+      if (!allowFree(ip)) {
+        res.writeHead(429, { "content-type": "application/json", "retry-after": "3600" }).end(
+          JSON.stringify({ error: "free-tier limit (30/hour). Paid tiers: /score $0.05 · /report $0.50 · /diligence $5.00 via x402." }),
+        );
+        return;
+      }
+      try {
+        const { input, stats } = await assembleInput(target, { windowDays: 730, maxEnrichedPayers: 30, now: new Date() });
+        const wash = assessWashRisk(input);
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+          endpoint: target,
+          washRisk: { level: wash.level, score: wash.score, topIndicators: wash.indicators.slice(0, 3).map((i) => i.detail) },
+          onChain: { payments: stats.nPayments, payers: stats.nPayers, clusters: wash.nPayerClusters },
+          tier: "free-quick-check",
+          paidTiers: { score: "$0.05", report: "$0.50", diligence: "$5.00 — pay via x402 (GoPlausible)" },
+          methodology: "provenance v0.1",
+        }, null, 2));
+      } catch (e) {
+        res.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: (e as Error).message }));
+      }
       return;
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {
