@@ -11,7 +11,7 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import { createPublicClient, http, parseAbiItem, formatUnits } from "viem";
 import { base } from "viem/chains";
-import { fetchBaseResources, groupByPayTo, BASE_USDC } from "@agentkit/provenance";
+import { fetchBaseResources, groupByPayTo, mapPool, BASE_USDC } from "@agentkit/provenance";
 import { assessWashRisk, type PaymentRecord } from "@agentkit/scoring";
 
 const TRANSFER = parseAbiItem("event Transfer(address indexed from, address indexed to, uint256 value)");
@@ -29,8 +29,9 @@ async function main() {
   const byPayTo = groupByPayTo(routes);
   console.log(`  ${routes.length} Base-USDC routes across ${byPayTo.size} merchants (bazaar total: ${total})\n`);
 
-  const client = createPublicClient({ chain: base, transport: http(RPCS[0]) });
-  const head = await client.getBlockNumber();
+  // one client per RPC; merchants rotate across them for throughput
+  const clients = RPCS.map((u) => createPublicClient({ chain: base, transport: http(u) }));
+  const head = await clients[0]!.getBlockNumber();
   const headTime = Date.now();
   const fromBlock = head - BLOCKS_PER_DAY * windowDays;
   const blockTime = (bn: bigint) => new Date(headTime - Number(head - bn) * 2000);
@@ -39,11 +40,11 @@ async function main() {
   const merchants = [...byPayTo.entries()]
     .sort((a, b) => b[1].length - a[1].length)
     .slice(0, maxEndpoints);
+  console.log(`scoring ${merchants.length} merchants over ${windowDays}d (concurrency 4)…\n`);
 
-  const out: Array<Record<string, unknown>> = [];
-  for (const [payTo, rs] of merchants) {
+  const out = await mapPool(merchants, 4, async ([payTo, rs], idx) => {
+    const client = clients[idx % clients.length]!;
     const name = rs[0]?.serviceName || new URL(rs[0]?.resource || "http://x").host;
-    process.stdout.write(`▸ ${name} (${rs.length} routes) ${payTo.slice(0, 10)}…\n`);
     try {
       // chunked getLogs; halve the chunk on RPC range errors
       const payments: PaymentRecord[] = [];
@@ -80,24 +81,22 @@ async function main() {
         windowEnd: new Date(headTime),
         payments,
       });
-      const cbQuality = JSON.stringify(rs[0]?.quality ?? null)?.slice(0, 60);
       console.log(
-        `   WASH ${wash.level.toUpperCase()} ${wash.score}/100 · ${payments.length} payments / ${wash.nPayers} payers / ${wash.nPayerClusters} clusters · cb-quality: ${cbQuality}`,
+        `  ✓ ${name.slice(0, 32).padEnd(32)} WASH ${wash.level.toUpperCase().padEnd(8)} ${String(wash.score).padStart(3)}/100 · ${payments.length}p/${wash.nPayers} payers`,
       );
-      for (const ind of wash.indicators.slice(0, 2)) console.log(`     ⚑ ${ind.detail}`);
-      out.push({
+      return {
         payTo, name, routes: rs.length,
         washLevel: wash.level, washScore: wash.score,
         payments: payments.length, payers: wash.nPayers, clusters: wash.nPayerClusters,
         topFlags: wash.indicators.slice(0, 3).map((i) => i.detail),
         coinbaseQuality: rs[0]?.quality ?? null,
         sampleResource: rs[0]?.resource,
-      });
+      } as Record<string, unknown>;
     } catch (e) {
-      console.log(`   error: ${(e as Error).message.slice(0, 90)}`);
-      out.push({ payTo, name, error: (e as Error).message });
+      console.log(`  ✗ ${name.slice(0, 32)} error: ${(e as Error).message.slice(0, 60)}`);
+      return { payTo, name, error: (e as Error).message } as Record<string, unknown>;
     }
-  }
+  });
 
   mkdirSync("scratch", { recursive: true });
   writeFileSync("scratch/base-explorer.json", JSON.stringify({ takenAt: new Date().toISOString(), windowDays: Number(windowDays), chain: "base", rows: out }, null, 2));
