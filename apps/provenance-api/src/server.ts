@@ -4,19 +4,20 @@
  *
  * Holds NO private keys: the resource server never signs — facilitators settle
  * payments to our public payTo addresses. Safe to deploy anywhere. Two rails,
- * two facilitators, routed by the network the payer chose:
- *   algorand:*  → GoPlausible facilitator (@x402-avm fork, unchanged)
- *   eip155:8453 → Coinbase CDP facilitator (upstream @x402/core v2.17 + JWT
- *                 auth from CDP_API_KEY_ID/SECRET via @coinbase/x402)
+ * routed by the network the payer chose:
+ *   algorand:*  → GoPlausible facilitator (@x402-avm fork)
+ *   eip155:8453 → GoPlausible by default (keyless — its /supported advertises
+ *                 Base); Coinbase CDP instead when CDP_API_KEY_ID/SECRET are set
+ *                 (adds Bazaar auto-listing). Upstream @x402/core v2.17 either way.
  * The two SDKs share the v2 wire format (PAYMENT-SIGNATURE / PAYMENT-REQUIRED
  * headers, base64-JSON) but their TS types diverged — hence two server
  * instances bridged by a decode-then-route switch, not one core.
  *
  * The 402 carries a spec-compliant `bazaar` discovery extension (strict JSON
  * Schema, built by @x402/extensions/bazaar). GoPlausible auto-lists us on the
- * Global x402 Challenge leaderboard, and Coinbase's x402 Bazaar auto-catalogs
- * us on the first successful settlement through the CDP facilitator — no
- * registration on either.
+ * Global x402 Challenge leaderboard; Base activity is picked up by x402scan and
+ * (once registered) 402 Index; and if CDP keys are set, Coinbase's Bazaar
+ * auto-catalogs us on the first CDP settlement — no registration on any.
  *
  * Pricing tiers (repricing was the #1 financial lever — see the financial plan):
  *   GET /score/<addr>      $0.05  quick wash verdict (level + score + top flags)
@@ -24,7 +25,8 @@
  *   GET /diligence/<addr>  $5.00  deep (full report + every indicator, wide window)
  *
  * Config (env): PORT, PROVENANCE_PAYTO, FACILITATOR_URL, NETWORK, TIER_MULT,
- *   BASE_PAYTO + CDP_API_KEY_ID + CDP_API_KEY_SECRET (all three → Base rail).
+ *   BASE_PAYTO (→ Base rail via GoPlausible), optional CDP_API_KEY_ID +
+ *   CDP_API_KEY_SECRET (→ Base rail via Coinbase CDP + Bazaar listing instead).
  */
 import http from "node:http";
 import { x402ResourceServer, HTTPFacilitatorClient } from "@x402-avm/core/server";
@@ -60,16 +62,22 @@ const atomic = (usdc: number) => String(Math.round(usdc * TIER_MULT * 1e6));
 
 /**
  * Multi-chain collection. Algorand is always advertised (GoPlausible settles).
- * Base activates only when BASE_PAYTO *and* CDP API keys are set — the Base
- * rail settles through Coinbase's CDP facilitator, which requires JWT auth.
- * Solana advertises when a payTo is set but has no settlement path yet.
+ * Base activates when BASE_PAYTO is set — settled by GoPlausible (keyless) or,
+ * if CDP keys are present, by Coinbase's CDP facilitator. Solana advertises
+ * when a payTo is set but has no settlement path yet.
  * Funds land natively per chain — read-don't-bridge.
  */
 const BASE_PAYTO = process.env.BASE_PAYTO ?? "";
 const BASE_NETWORK = "eip155:8453"; // Base mainnet
+// Base settles through GoPlausible by default (same keyless facilitator as
+// Algorand — its /supported advertises eip155:8453). Setting CDP keys switches
+// the Base rail to Coinbase's CDP facilitator instead, which additionally
+// auto-lists us in the Coinbase x402 Bazaar. CDP is an OPT-IN upgrade, not a
+// requirement: BASE_PAYTO alone is enough to accept Base USDC.
 const CDP_API_KEY_ID = process.env.CDP_API_KEY_ID ?? "";
 const CDP_API_KEY_SECRET = process.env.CDP_API_KEY_SECRET ?? "";
-const BASE_ENABLED = Boolean(BASE_PAYTO && CDP_API_KEY_ID && CDP_API_KEY_SECRET);
+const USE_CDP = Boolean(CDP_API_KEY_ID && CDP_API_KEY_SECRET);
+const BASE_ENABLED = Boolean(BASE_PAYTO);
 const SOLANA_PAYTO = process.env.SOLANA_PAYTO ?? "";
 // Set once main() has registered + initialized the EVM resource server; the
 // Base rail is only advertised while this is non-null (fail dark, not broken).
@@ -273,24 +281,28 @@ async function main() {
   registerExactAvmScheme(server, { networks: [NETWORK as `${string}:${string}`] });
   await server.initialize();
 
-  // Base rail: a SECOND resource server on upstream @x402/core v2.17, pointed
-  // at Coinbase's CDP facilitator (https://api.cdp.coinbase.com/platform/v2/x402)
-  // with per-request JWT auth built from the CDP key. Both cores speak the same
-  // v2 wire format, but their TS types diverged (the @x402/evm v2.17 scheme
-  // can't register on the @x402-avm fork's core) — so we route by network.
+  // Base rail: a SECOND resource server on upstream @x402/core v2.17 (the @x402/evm
+  // exact scheme can't register on the @x402-avm fork's core, so we route by
+  // network across two cores that share the v2 wire format). Its facilitator is
+  // GoPlausible by default — keyless, no auth, same host that settles Algorand —
+  // or Coinbase CDP when CDP keys are present (adds Bazaar auto-listing).
   if (BASE_ENABLED) {
     try {
-      const cdp = new EvmFacilitatorClient(createFacilitatorConfig(CDP_API_KEY_ID, CDP_API_KEY_SECRET));
-      const evm = new EvmResourceServer(cdp);
+      const evmFacilitator = USE_CDP
+        ? new EvmFacilitatorClient(createFacilitatorConfig(CDP_API_KEY_ID, CDP_API_KEY_SECRET))
+        : new EvmFacilitatorClient({ url: FACILITATOR_URL });
+      const evm = new EvmResourceServer(evmFacilitator);
       registerExactEvmScheme(evm, { networks: [BASE_NETWORK] });
-      await evm.initialize(); // hits CDP /supported — proves the key works
+      await evm.initialize(); // hits the facilitator's /supported — proves the rail is reachable
       evmServer = evm;
-      console.log(`Base rail LIVE via CDP facilitator · payTo ${BASE_PAYTO.slice(0, 10)}… · first settlement auto-lists us in the x402 Bazaar`);
+      console.log(
+        USE_CDP
+          ? `Base rail LIVE via CDP facilitator · payTo ${BASE_PAYTO.slice(0, 10)}… · first settlement auto-lists us in the x402 Bazaar`
+          : `Base rail LIVE via GoPlausible (keyless) · payTo ${BASE_PAYTO.slice(0, 10)}… · discoverable via x402scan + 402 Index`,
+      );
     } catch (e) {
-      console.error(`⚠ CDP facilitator init failed (${(e as Error).message}) — Base rail disabled, Algorand unaffected.`);
+      console.error(`⚠ Base facilitator init failed (${(e as Error).message}) — Base rail disabled, Algorand unaffected.`);
     }
-  } else if (BASE_PAYTO) {
-    console.warn("⚠ BASE_PAYTO set but CDP_API_KEY_ID/CDP_API_KEY_SECRET missing — Base rail disabled (CDP facilitator requires auth).");
   }
   if (SOLANA_PAYTO) {
     console.warn("⚠ SOLANA_PAYTO set: advertising that rail, but no SVM settlement path is registered yet — Solana payments will fail.");

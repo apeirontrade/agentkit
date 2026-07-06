@@ -10,7 +10,13 @@ Two settlement rails, routed by the network the payer chooses:
 | rail | network | facilitator | status |
 |------|---------|-------------|--------|
 | Algorand mainnet | `algorand:wGHE2…` | GoPlausible (`facilitator.goplausible.xyz`) | always on |
-| Base mainnet | `eip155:8453` | Coinbase CDP (`api.cdp.coinbase.com/platform/v2/x402`) | on when `BASE_PAYTO` + CDP keys are set |
+| Base mainnet | `eip155:8453` | GoPlausible by default (keyless); Coinbase CDP if CDP keys set | on when `BASE_PAYTO` is set |
+
+**Base needs no Coinbase account.** GoPlausible's facilitator settles `eip155:8453`
+(verified via its `/supported`), so `BASE_PAYTO` alone lights up the Base rail —
+keyless, same host as the Algorand rail. Setting `CDP_API_KEY_ID` +
+`CDP_API_KEY_SECRET` instead routes Base through Coinbase's CDP facilitator, whose
+only added benefit is auto-listing in the Coinbase x402 Bazaar.
 
 ## Endpoints
 - `GET /` — service info
@@ -21,14 +27,16 @@ Two settlement rails, routed by the network the payer chooses:
 - `GET /diligence/<ADDR>` — $5.00 · deep diligence (x402-gated)
 
 Every 402 carries a spec-compliant `bazaar` discovery extension (strict
-2020-12 JSON Schema, built with `@x402/extensions/bazaar`). Consequences:
+2020-12 JSON Schema, built with `@x402/extensions/bazaar`). Discovery reach:
 - **GoPlausible** auto-lists us on the Global x402 Challenge leaderboard after
   the first public Algorand payment.
-- **Coinbase's x402 Bazaar** auto-catalogs us on the first successful
-  settlement through the CDP facilitator — no registration. The facilitator
-  strict-validates the extension at settle (`EXTENSION-RESPONSES` header:
-  `processing` → indexed; `rejected` if the schema check fails — run the
-  dry-run below to prove it passes before going live).
+- **x402scan** indexes Base endpoints from on-chain activity — no signup — so
+  the GoPlausible-settled Base rail surfaces there automatically.
+- **402 Index** takes a direct registration for the Base endpoint.
+- **Coinbase's x402 Bazaar** (only if CDP keys are set) auto-catalogs us on the
+  first CDP settlement — the facilitator strict-validates the extension at settle
+  (`EXTENSION-RESPONSES: processing` → indexed). Run the dry-run below to prove
+  the extension passes before going live.
 
 ## Config (env)
 | var | default | notes |
@@ -38,17 +46,16 @@ Every 402 carries a spec-compliant `bazaar` discovery extension (strict
 | `FACILITATOR_URL` | `https://facilitator.goplausible.xyz` | Algorand rail |
 | `NETWORK` | Algorand mainnet CAIP-2 | |
 | `TIER_MULT` | `1` | global price multiplier, no redeploy repricing |
-| `BASE_PAYTO` | — | Base (0x…) revenue address, receive-only. **Use a fresh address** — do NOT reuse the Jobsmith hot wallet (`JOBSMITH_WALLET_PK`); payTo needs no key on the server, so give it an address whose key never touches a server |
-| `CDP_API_KEY_ID` | — | CDP Secret API key id (facilitator auth only) |
-| `CDP_API_KEY_SECRET` | — | CDP Secret API key secret (Ed25519/EC PEM) |
+| `BASE_PAYTO` | — | Base (0x…) revenue address, receive-only. Setting this alone lights up the Base rail via GoPlausible. **Use a fresh address** — do NOT reuse the Jobsmith hot wallet (`JOBSMITH_WALLET_PK`); payTo needs no key on the server, so give it an address whose key never touches a server |
+| `CDP_API_KEY_ID` | — | *Optional.* CDP Secret API key id — set (with the secret) to route Base through Coinbase CDP instead of GoPlausible, adding Bazaar auto-listing |
+| `CDP_API_KEY_SECRET` | — | *Optional.* CDP Secret API key secret (Ed25519/EC PEM) |
 | `SOLANA_PAYTO` | — | advertises the rail; **no SVM settlement path yet** |
 
-The Base rail only activates when all three of `BASE_PAYTO`,
-`CDP_API_KEY_ID`, `CDP_API_KEY_SECRET` are set *and* the CDP facilitator
-handshake succeeds at boot (`Base rail LIVE via CDP facilitator` in the log).
-On any failure it fails dark: Base is simply not advertised, Algorand is
-unaffected. CDP keys are used exclusively to sign facilitator-API JWTs —
-they cannot move funds.
+The Base rail activates when `BASE_PAYTO` is set *and* the chosen facilitator's
+handshake succeeds at boot — `Base rail LIVE via GoPlausible (keyless)` by
+default, or `Base rail LIVE via CDP facilitator` if CDP keys are present. On any
+failure it fails dark: Base is simply not advertised, Algorand is unaffected.
+CDP keys, when used, only sign facilitator-API JWTs — they cannot move funds.
 
 ## Go-live checklist for Base / the Coinbase Bazaar (manual, one-time)
 1. Create a CDP account at <https://portal.cdp.coinbase.com>, then
