@@ -141,6 +141,101 @@ function baseUrl(req: http.IncomingMessage): string {
   return `${proto}://${host}`;
 }
 
+// ---- Discovery surface builders ----
+const SITE_URL = process.env.SITE_URL ?? "https://apeirontrade.github.io/provenance-site";
+
+/** A2A-style agent card: what this service is, how agents pay it, where else we live. */
+function agentCard(origin: string) {
+  return {
+    protocolVersion: "0.3.0",
+    name: "Provenance",
+    description:
+      "Ratings agency for the agent economy: organic-revenue-quality / wash-trading forensics for x402 endpoints, computed from public on-chain data. Free quick checks; paid deep forensics over x402 (USDC).",
+    url: origin,
+    provider: { organization: "Provenance", url: SITE_URL },
+    version: "0.1.0",
+    capabilities: { streaming: false, pushNotifications: false },
+    defaultInputModes: ["text/plain"],
+    defaultOutputModes: ["application/json"],
+    skills: [
+      {
+        id: "check_endpoint_risk",
+        name: "Free wash-risk quick check",
+        description: `GET ${origin}/check/<algorand-address> — free verdict (level, 0-100 score, top indicators), 30/hr/IP.`,
+        tags: ["trust", "x402", "wash-trading", "free"],
+      },
+      {
+        id: "score",
+        name: "Wash verdict ($0.05 via x402)",
+        description: `GET ${origin}/score/<algorand-address> — pay-per-call over x402.`,
+        tags: ["trust", "x402", "paid"],
+      },
+      {
+        id: "report",
+        name: "Full 8-signal ORQ report ($0.50 via x402)",
+        description: `GET ${origin}/report/<algorand-address>`,
+        tags: ["trust", "x402", "paid"],
+      },
+      {
+        id: "diligence",
+        name: "Deep diligence ($5.00 via x402)",
+        description: `GET ${origin}/diligence/<algorand-address> — 3-year window, full payer-cluster forensics.`,
+        tags: ["trust", "x402", "paid", "diligence"],
+      },
+    ],
+    // Non-spec extras agents and indexers can use:
+    x402: { rails: CHAIN_RAILS.map((r) => ({ network: r.network, payTo: r.payTo })), pricingUsd: { score: 0.05, report: 0.5, diligence: 5 } },
+    related: {
+      dataSite: SITE_URL,
+      mcpServer: "https://www.npmjs.com/package/provenance-mcp",
+      guardLibrary: "https://www.npmjs.com/package/provenance-guard",
+      mcpRegistry: "io.github.apeirontrade/provenance-mcp",
+    },
+  };
+}
+
+const LLMS_TXT = `# Provenance
+> Ratings agency for the agent economy: wash-trading / organic-revenue-quality forensics for x402 (machine-payable) endpoints, from public on-chain data. Signals, not accusations.
+
+## API (this host)
+- /check/<algorand-address>: free wash-risk verdict, 30/hr/IP
+- /score /report /diligence: paid tiers ($0.05 / $0.50 / $5.00) over x402, USDC
+- /.well-known/agent-card.json: machine-readable service card
+- /badge/<address>.svg: embeddable grade badge
+
+## Elsewhere
+- Data site + weekly Bazaar Wash Report: ${"https://apeirontrade.github.io/provenance-site"}
+- MCP server (agents): npm "provenance-mcp" · MCP registry io.github.apeirontrade/provenance-mcp
+- Pre-payment guard (one line for x402 clients): npm "provenance-guard"
+- Source/docs: https://github.com/apeirontrade/provenance-mcp
+`;
+
+/** Shields-style flat badge. Cached per address; capped LRU-ish map. */
+const badgeCache = new Map<string, { svg: string; expires: number }>();
+const BADGE_COLORS: Record<string, string> = { low: "#3fb950", medium: "#d29922", high: "#f0883e", critical: "#f85149" };
+function renderBadge(label: string, value: string, color: string): string {
+  const lw = 6 * label.length + 10, vw = 6 * value.length + 10, w = lw + vw;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="20" role="img" aria-label="${label}: ${value}"><rect width="${lw}" height="20" fill="#555"/><rect x="${lw}" width="${vw}" height="20" fill="${color}"/><g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,sans-serif" font-size="11"><text x="${lw / 2}" y="14">${label}</text><text x="${lw + vw / 2}" y="14">${value}</text></g></svg>`;
+}
+async function badgeSvg(target: string, ip: string): Promise<string> {
+  const hit = badgeCache.get(target);
+  if (hit && hit.expires > Date.now()) return hit.svg;
+  let svg: string;
+  if (!allowFree(ip)) {
+    return renderBadge("provenance", "unrated", "#8b949e"); // rate-limited: don't cache
+  }
+  try {
+    const { input } = await assembleInput(target, { windowDays: 730, maxEnrichedPayers: 30, now: new Date() });
+    const wash = assessWashRisk(input);
+    svg = renderBadge("provenance", `${wash.level} ${wash.score}/100`, BADGE_COLORS[wash.level] ?? "#8b949e");
+  } catch {
+    svg = renderBadge("provenance", "unrated", "#8b949e");
+  }
+  if (badgeCache.size > 5000) badgeCache.clear();
+  badgeCache.set(target, { svg, expires: Date.now() + 3600_000 });
+  return svg;
+}
+
 async function buildResult(target: string, depth: Depth) {
   const wide = depth === "deep";
   const { input, stats } = await assembleInput(target, {
@@ -206,6 +301,29 @@ async function main() {
 
     if (url.pathname === "/health") {
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    // ---- Discovery surfaces (pull marketing: crawlers + agents find us) ----
+    // A2A-style agent card. Served at both the spec path and the legacy alias.
+    if (url.pathname === "/.well-known/agent-card.json" || url.pathname === "/.well-known/agent.json") {
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "public, max-age=3600" }).end(
+        JSON.stringify(agentCard(baseUrl(req)), null, 2),
+      );
+      return;
+    }
+    if (url.pathname === "/llms.txt") {
+      res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "public, max-age=3600" }).end(LLMS_TXT);
+      return;
+    }
+    // Embeddable grade badge — README/site embeds backlink to us. Cached 1h per
+    // address; uncached computes ride the free-tier bucket (gray badge when hit).
+    const badgeM = url.pathname.match(/^\/badge\/([A-Z2-7]{58})\.svg$/);
+    if (badgeM) {
+      const target = badgeM[1]!;
+      const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? req.socket.remoteAddress ?? "?";
+      const svg = await badgeSvg(target, ip);
+      res.writeHead(200, { "content-type": "image/svg+xml", "cache-control": "public, max-age=3600" }).end(svg);
       return;
     }
 
