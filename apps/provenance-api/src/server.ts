@@ -2,25 +2,44 @@
  * Provenance x402 API — a deployable, secret-free service that sells organic-
  * revenue-quality / wash-risk scores for Algorand x402 endpoints, in TIERS.
  *
- * Holds NO private keys: the resource server never signs — the GoPlausible
- * facilitator settles payments to our public payTo address. Safe to deploy
- * anywhere. The 402 carries a `bazaar` discovery extension so GoPlausible
- * auto-lists this endpoint on the Global x402 Challenge leaderboard once it's
- * public and receives its first payment.
+ * Holds NO private keys: the resource server never signs — facilitators settle
+ * payments to our public payTo addresses. Safe to deploy anywhere. Two rails,
+ * two facilitators, routed by the network the payer chose:
+ *   algorand:*  → GoPlausible facilitator (@x402-avm fork, unchanged)
+ *   eip155:8453 → Coinbase CDP facilitator (upstream @x402/core v2.17 + JWT
+ *                 auth from CDP_API_KEY_ID/SECRET via @coinbase/x402)
+ * The two SDKs share the v2 wire format (PAYMENT-SIGNATURE / PAYMENT-REQUIRED
+ * headers, base64-JSON) but their TS types diverged — hence two server
+ * instances bridged by a decode-then-route switch, not one core.
+ *
+ * The 402 carries a spec-compliant `bazaar` discovery extension (strict JSON
+ * Schema, built by @x402/extensions/bazaar). GoPlausible auto-lists us on the
+ * Global x402 Challenge leaderboard, and Coinbase's x402 Bazaar auto-catalogs
+ * us on the first successful settlement through the CDP facilitator — no
+ * registration on either.
  *
  * Pricing tiers (repricing was the #1 financial lever — see the financial plan):
  *   GET /score/<addr>      $0.05  quick wash verdict (level + score + top flags)
  *   GET /report/<addr>     $0.50  full report (all 8 signals, ORQ grade, drift)
  *   GET /diligence/<addr>  $5.00  deep (full report + every indicator, wide window)
  *
- * Config (env): PORT, PROVENANCE_PAYTO, FACILITATOR_URL, NETWORK, TIER_MULT.
+ * Config (env): PORT, PROVENANCE_PAYTO, FACILITATOR_URL, NETWORK, TIER_MULT,
+ *   BASE_PAYTO + CDP_API_KEY_ID + CDP_API_KEY_SECRET (all three → Base rail).
  */
 import http from "node:http";
 import { x402ResourceServer, HTTPFacilitatorClient } from "@x402-avm/core/server";
 import { registerExactAvmScheme } from "@x402-avm/avm/exact/server";
-import { decodePaymentSignatureHeader, encodePaymentRequiredHeader } from "@x402-avm/core/http";
+import {
+  decodePaymentSignatureHeader,
+  encodePaymentRequiredHeader,
+  encodePaymentResponseHeader,
+} from "@x402-avm/core/http";
+import { x402ResourceServer as EvmResourceServer, HTTPFacilitatorClient as EvmFacilitatorClient } from "@x402/core/server";
+import { registerExactEvmScheme } from "@x402/evm/exact/server";
+import { createFacilitatorConfig } from "@coinbase/x402";
 import { assessWashRisk, scoreEndpoint } from "@agentkit/scoring";
 import { assembleInput } from "@agentkit/provenance";
+import { BAZAAR_EXTENSIONS, type Depth } from "./bazaar.js";
 
 const PORT = Number(process.env.PORT ?? 8402);
 const PAY_TO = process.env.PROVENANCE_PAYTO ?? "K5HIZPOUUUBQ5WJ6I3DT6NGIQUMALYJYSVVBY7CXA3BYBWY6225DNNBDSA";
@@ -31,7 +50,6 @@ const SPONSOR = "ZMFK2OI7ZBD2U27ISERZC4S6LKM6WMFJPZQ4MYNJDZ2VNBNMBA67RA22AA";
 const TIER_MULT = Number(process.env.TIER_MULT ?? 1);
 const ADDR_RE = /^[A-Z2-7]{58}$/;
 
-type Depth = "quick" | "full" | "deep";
 const TIERS: Record<string, { priceUsdc: number; depth: Depth; label: string }> = {
   score: { priceUsdc: 0.05, depth: "quick", label: "quick wash verdict" },
   report: { priceUsdc: 0.5, depth: "full", label: "full scored report" },
@@ -41,13 +59,21 @@ const TIERS: Record<string, { priceUsdc: number; depth: Depth; label: string }> 
 const atomic = (usdc: number) => String(Math.round(usdc * TIER_MULT * 1e6));
 
 /**
- * Multi-chain collection (verified: the GoPlausible facilitator settles Base,
- * Solana AND Algorand — one facilitator, three rails, no bridge). Algorand is
- * always advertised; Base/Solana activate only when a payTo address for that
- * chain is configured via env. Funds land natively per chain — read-don't-bridge.
+ * Multi-chain collection. Algorand is always advertised (GoPlausible settles).
+ * Base activates only when BASE_PAYTO *and* CDP API keys are set — the Base
+ * rail settles through Coinbase's CDP facilitator, which requires JWT auth.
+ * Solana advertises when a payTo is set but has no settlement path yet.
+ * Funds land natively per chain — read-don't-bridge.
  */
 const BASE_PAYTO = process.env.BASE_PAYTO ?? "";
+const BASE_NETWORK = "eip155:8453"; // Base mainnet
+const CDP_API_KEY_ID = process.env.CDP_API_KEY_ID ?? "";
+const CDP_API_KEY_SECRET = process.env.CDP_API_KEY_SECRET ?? "";
+const BASE_ENABLED = Boolean(BASE_PAYTO && CDP_API_KEY_ID && CDP_API_KEY_SECRET);
 const SOLANA_PAYTO = process.env.SOLANA_PAYTO ?? "";
+// Set once main() has registered + initialized the EVM resource server; the
+// Base rail is only advertised while this is non-null (fail dark, not broken).
+let evmServer: InstanceType<typeof EvmResourceServer> | null = null;
 const CHAIN_RAILS = [
   {
     network: NETWORK,
@@ -55,12 +81,12 @@ const CHAIN_RAILS = [
     payTo: PAY_TO,
     extra: { name: "USDC", decimals: 6, feePayer: SPONSOR },
   },
-  ...(BASE_PAYTO
+  ...(BASE_ENABLED
     ? [{
-        network: "eip155:8453",
+        network: BASE_NETWORK,
         asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // USDC on Base
         payTo: BASE_PAYTO,
-        extra: { name: "USDC", version: "2" },
+        extra: { name: "USDC", version: "2" }, // EIP-712 domain for EIP-3009 transferWithAuthorization
       }]
     : []),
   ...(SOLANA_PAYTO
@@ -74,7 +100,9 @@ const CHAIN_RAILS = [
 ];
 
 function acceptsFor(resourceUrl: string, priceUsdc: number, description: string) {
-  return CHAIN_RAILS.map((rail) => ({
+  // A rail is only offered if it can actually settle: Base drops out if the
+  // EVM server failed to initialize against the CDP facilitator.
+  return CHAIN_RAILS.filter((rail) => rail.network !== BASE_NETWORK || evmServer !== null).map((rail) => ({
     scheme: "exact",
     network: rail.network,
     amount: atomic(priceUsdc),
@@ -88,23 +116,10 @@ function acceptsFor(resourceUrl: string, priceUsdc: number, description: string)
   }));
 }
 
-
-const bazaarExtension = (depth: Depth) => ({
-  bazaar: {
-    info: {
-      input: { type: "http", method: "GET", pathParams: { address: "Algorand endpoint payTo address" } },
-      output: {
-        type: "json",
-        example: {
-          endpoint: "MERCHANT_ADDRESS",
-          tier: depth,
-          washRisk: { level: "critical", score: 98 },
-          onChain: { payments: 207, payers: 2, clusters: 1 },
-        },
-      },
-    },
-  },
-});
+// Spec-compliant `bazaar` discovery extension — see src/bazaar.ts. It rides
+// in the 402's `extensions`; the payer's client echoes it inside the payment
+// payload; the CDP facilitator strict-validates it at settle and auto-catalogs
+// the endpoint in the x402 Bazaar (EXTENSION-RESPONSES: processing → indexed).
 
 /** Naive in-memory free-tier limiter: 30 checks/hour/IP. */
 const freeBuckets = new Map<string, { count: number; resetAt: number }>();
@@ -161,16 +176,30 @@ async function main() {
   const facilitator = new HTTPFacilitatorClient({ url: FACILITATOR_URL });
   const server = new x402ResourceServer(facilitator);
   registerExactAvmScheme(server, { networks: [NETWORK as `${string}:${string}`] });
-  if (BASE_PAYTO || SOLANA_PAYTO) {
-    // Rails advertise in accepts[] once a payTo is set; settlement additionally
-    // needs the EVM/SVM server scheme registered here (verify SDK compatibility
-    // at that point — the @x402/evm v2.17 client was incompatible with this core).
-    console.warn(
-      "⚠ BASE_PAYTO/SOLANA_PAYTO set: advertising those rails, but EVM/SVM server " +
-        "schemes are not yet registered — settlement on those chains will fail until added.",
-    );
-  }
   await server.initialize();
+
+  // Base rail: a SECOND resource server on upstream @x402/core v2.17, pointed
+  // at Coinbase's CDP facilitator (https://api.cdp.coinbase.com/platform/v2/x402)
+  // with per-request JWT auth built from the CDP key. Both cores speak the same
+  // v2 wire format, but their TS types diverged (the @x402/evm v2.17 scheme
+  // can't register on the @x402-avm fork's core) — so we route by network.
+  if (BASE_ENABLED) {
+    try {
+      const cdp = new EvmFacilitatorClient(createFacilitatorConfig(CDP_API_KEY_ID, CDP_API_KEY_SECRET));
+      const evm = new EvmResourceServer(cdp);
+      registerExactEvmScheme(evm, { networks: [BASE_NETWORK] });
+      await evm.initialize(); // hits CDP /supported — proves the key works
+      evmServer = evm;
+      console.log(`Base rail LIVE via CDP facilitator · payTo ${BASE_PAYTO.slice(0, 10)}… · first settlement auto-lists us in the x402 Bazaar`);
+    } catch (e) {
+      console.error(`⚠ CDP facilitator init failed (${(e as Error).message}) — Base rail disabled, Algorand unaffected.`);
+    }
+  } else if (BASE_PAYTO) {
+    console.warn("⚠ BASE_PAYTO set but CDP_API_KEY_ID/CDP_API_KEY_SECRET missing — Base rail disabled (CDP facilitator requires auth).");
+  }
+  if (SOLANA_PAYTO) {
+    console.warn("⚠ SOLANA_PAYTO set: advertising that rail, but no SVM settlement path is registered yet — Solana payments will fail.");
+  }
 
   const httpServer = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", baseUrl(req));
@@ -247,27 +276,54 @@ async function main() {
         error: "Payment required",
         resource: { url: resourceUrl, description, mimeType: "application/json" },
         accepts,
-        extensions: bazaarExtension(tier.depth),
+        extensions: BAZAAR_EXTENSIONS[tier.depth],
       };
+      // Header (v2) AND body (v1 clients + registry probes, e.g. 402index.io
+      // reads bodySnippet) carry the same payload — spec-hygienic duplication.
       res.writeHead(402, { "content-type": "application/json", "payment-required": encodePaymentRequiredHeader(required as never) });
-      res.end("{}");
+      res.end(JSON.stringify(required));
       return;
     }
 
     try {
-      const payload = decodePaymentSignatureHeader(paymentHeader);
+      const payload = decodePaymentSignatureHeader(paymentHeader) as {
+        accepted?: { network?: string };
+        network?: string; // older clients put network at the top level
+      };
       // Settle against the rail the payer actually chose (multi-chain accepts).
-      const paidNetwork = (payload as { network?: string }).network;
+      // Requirements always come from OUR accepts — never trust the client's copy.
+      const paidNetwork = payload.accepted?.network ?? payload.network;
       const requirements = accepts.find((a) => a.network === paidNetwork) ?? accepts[0]!;
-      const settle = await server.settlePayment(payload as never, requirements as never);
+      const settle =
+        paidNetwork?.startsWith("eip155:") && evmServer
+          ? // Base → CDP facilitator. Strip to the canonical v2.17 requirements
+            // shape (no resource/description/mimeType — CDP validates strictly)
+            // and pass the declared bazaar extension for echo-validation.
+            await evmServer.settlePayment(
+              payload as never,
+              {
+                scheme: requirements.scheme,
+                network: requirements.network as `${string}:${string}`,
+                asset: requirements.asset,
+                amount: requirements.amount,
+                payTo: requirements.payTo,
+                maxTimeoutSeconds: requirements.maxTimeoutSeconds,
+                extra: requirements.extra as Record<string, unknown>,
+              },
+              BAZAAR_EXTENSIONS[tier.depth] as never,
+            )
+          : // Algorand (and anything else) → GoPlausible, unchanged.
+            await server.settlePayment(payload as never, requirements as never);
       if (!settle.success) {
         res.writeHead(402, { "content-type": "application/json" }).end(JSON.stringify({ error: "settlement failed", detail: settle }));
         return;
       }
       const result = await buildResult(target, tier.depth);
-      res.writeHead(200, { "content-type": "application/json", "x-payment-settled": settle.transaction ?? "" }).end(
-        JSON.stringify({ ...result, settlement: settle.transaction }, null, 2),
-      );
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "x-payment-settled": settle.transaction ?? "",
+        "payment-response": encodePaymentResponseHeader(settle as never), // v2 receipt header
+      }).end(JSON.stringify({ ...result, settlement: settle.transaction }, null, 2));
     } catch (e) {
       res.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: (e as Error).message }));
     }
